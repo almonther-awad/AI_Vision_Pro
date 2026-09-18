@@ -1,0 +1,7 @@
+customtkinter
+opencv-python==4.10.0.84
+opencv-contrib-python==4.10.0.84
+pillow
+numpy
+arabic-reshaper
+python-bidi
