@@ -11,12 +11,12 @@ class VideoAIEditorWindow(ctk.CTkToplevel):
     def __init__(self, master):
         super().__init__(master)
 
-        self.title("معالجة الفيديو والذكاء الاصطناعي اللحظي - AI Vision Pro")
+        self.title(fix_arabic("معالجة الفيديو والذكاء الاصطناعي اللحظي - AI Vision Pro"))
         self.geometry("1400x900")
         self.minsize(1200, 750)
         self.focus() # جعل النافذة في المقدمة
 
-        # المتغيرات الأساسية (نفس الكود الأصلي تماماً)
+        # المتغيرات الأساسية
         self.working_image = None 
         self.current_image = None 
         self.second_image = None 
@@ -27,6 +27,11 @@ class VideoAIEditorWindow(ctk.CTkToplevel):
         self.is_paused = False
         self.is_recording = False
         self.video_writer = None
+        
+        # متغيرات شريط الزمن
+        self.total_frames = 0
+        self.fps = 30
+        self._is_updating_slider = False
         
         self.history = []
         self.redo_stack = []
@@ -97,12 +102,25 @@ class VideoAIEditorWindow(ctk.CTkToplevel):
         # ================== مساحة العرض ==================
         self.main_frame = ctk.CTkFrame(self, fg_color="#121212", corner_radius=10)
         self.main_frame.grid(row=0, column=1, padx=15, pady=15, sticky="nsew")
-        self.main_frame.grid_rowconfigure(0, weight=1)
+        self.main_frame.grid_rowconfigure(0, weight=1) # لملء الشاشة بالصورة
+        self.main_frame.grid_rowconfigure(1, weight=0) # لشريط الزمن
         self.main_frame.grid_columnconfigure(0, weight=1)
 
         self.image_display = ctk.CTkLabel(self.main_frame, text=fix_arabic("الرجاء تحميل فيديو أو فتح الكاميرا"), text_color="gray", font=ctk.CTkFont(size=18))
-        self.image_display.grid(row=0, column=0, sticky="nsew")
+        self.image_display.grid(row=0, column=0, sticky="nsew", pady=(0, 10))
         self.image_display.bind("<Configure>", self.on_resize)
+
+        # إضافة شريط الزمن (Timeline) أسفل العرض
+        self.timeline_frame = ctk.CTkFrame(self.main_frame, fg_color="transparent")
+        self.timeline_frame.grid(row=1, column=0, sticky="ew", padx=15, pady=(0, 15))
+        
+        self.timeline_slider = ctk.CTkSlider(self.timeline_frame, from_=0, to=100, command=self.on_seek)
+        self.timeline_slider.set(0)
+        self.timeline_slider.pack(side="left", fill="x", expand=True, padx=(0, 15))
+        self.timeline_slider.configure(state="disabled") # معطل افتراضياً حتى يتم تحميل الفيديو
+        
+        self.time_label = ctk.CTkLabel(self.timeline_frame, text="00:00 / 00:00", font=ctk.CTkFont(size=12))
+        self.time_label.pack(side="right")
 
         # ================== لوحة الأدوات (Tabs) الشاملة ==================
         self.tools_panel = ctk.CTkTabview(self, width=350)
@@ -112,7 +130,6 @@ class VideoAIEditorWindow(ctk.CTkToplevel):
         for tab in tabs: self.tools_panel.add(fix_arabic(tab))
         self.sliders = {}
 
-        # نفس الواجهات الخاصة بالأدوات في الكود الأصلي (تم نسخها كاملة)
         self.ai_var = ctk.StringVar(value="بدون ذكاء اصطناعي")
         ai_models = ["بدون ذكاء اصطناعي", "اكتشاف الوجوه (Face Detection)", "تتبع وتشويش الوجوه (Privacy)", "التعرف على الأشياء (MobileNet)", "عزل الحركة (MOG2)"]
         for m in ai_models: ctk.CTkRadioButton(self.tools_panel.tab(fix_arabic("الذكاء الاصطناعي")), text=fix_arabic(m), variable=self.ai_var, value=m).pack(pady=10, padx=10, anchor="w")
@@ -150,6 +167,9 @@ class VideoAIEditorWindow(ctk.CTkToplevel):
         ctk.CTkLabel(self.tools_panel.tab(fix_arabic("الأبعاد والرسم")), text=fix_arabic("التحويل الهندسي"), font=ctk.CTkFont(weight="bold")).pack(pady=5)
         self.setup_slider(self.tools_panel.tab(fix_arabic("الأبعاد والرسم")), "إزاحة X (Translation X)", -300, 300, 0)
         self.setup_slider(self.tools_panel.tab(fix_arabic("الأبعاد والرسم")), "إزاحة Y (Translation Y)", -300, 300, 0)
+        # إضافة شريط التكبير/التصغير (الزوم)
+        self.setup_slider(self.tools_panel.tab(fix_arabic("الأبعاد والرسم")), "تكبير / تصغير (Zoom)", 0.2, 5.0, 1.0)
+        
         ctk.CTkButton(self.tools_panel.tab(fix_arabic("الأبعاد والرسم")), text=fix_arabic("✂️ قص الإطار (Crop)"), command=self.crop_image).pack(pady=5, fill="x", padx=20)
         ctk.CTkButton(self.tools_panel.tab(fix_arabic("الأبعاد والرسم")), text=fix_arabic("🔄 تدوير 90°"), command=lambda: self.rotate_image(cv2.ROTATE_90_CLOCKWISE)).pack(pady=5, fill="x", padx=20)
         
@@ -168,12 +188,24 @@ class VideoAIEditorWindow(ctk.CTkToplevel):
         slider.pack(pady=5, fill="x", padx=20)
         self.sliders[label] = slider
 
-    # ================== تحميل وسائط الفيديو ==================
+    # ================== تحميل وسائط الفيديو وادارة شريط الزمن ==================
     def load_media(self):
-        file_path = filedialog.askopenfilename(filetypes=[("Video Files", "*.mp4;*.avi;*.mov")])
+        file_path = filedialog.askopenfilename(filetypes=[("Video Files", "*.mp4;*.avi;*.mov;*.mkv")])
         if not file_path: return
         self.stop_media()
         self.cap = cv2.VideoCapture(file_path)
+        
+        # تهيئة معلومات شريط الزمن
+        self.total_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        self.fps = self.cap.get(cv2.CAP_PROP_FPS)
+        if self.fps <= 0: self.fps = 30
+        
+        if self.total_frames > 0:
+            self.timeline_slider.configure(to=self.total_frames, state="normal")
+            self.timeline_slider.set(0)
+        else:
+            self.timeline_slider.configure(state="disabled")
+
         self.is_playing = True
         self.is_paused = False
         self.btn_pause.configure(text=fix_arabic("⏸️ إيقاف مؤقت"), fg_color="#ea580c")
@@ -182,10 +214,38 @@ class VideoAIEditorWindow(ctk.CTkToplevel):
     def start_live_camera(self):
         self.stop_media()
         self.cap = cv2.VideoCapture(0)
+        
+        # تعطيل شريط الزمن أثناء الكاميرا
+        self.total_frames = 0
+        self.timeline_slider.configure(state="disabled")
+        self.time_label.configure(text="Live")
+
         self.is_playing = True
         self.is_paused = False
         self.btn_pause.configure(text=fix_arabic("⏸️ إيقاف مؤقت"), fg_color="#ea580c")
         self.video_loop()
+
+    # دالة التحكم بالتمرير في شريط الزمن
+    def on_seek(self, value):
+        if self._is_updating_slider or self.cap is None or self.total_frames <= 0: 
+            return
+        
+        frame_idx = int(value)
+        self.cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+        
+        if self.is_paused:
+            ret, frame = self.cap.read()
+            if ret:
+                self.last_raw_frame = frame.copy()
+                self.working_image = frame.copy()
+                self.current_image = self.apply_processing(frame)
+                self.render_image(self.current_image)
+                # نرجع فريم واحد للخلف حتى لا نتخطاه عند الاستئناف
+                self.cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+                
+            cur_sec = int(frame_idx / self.fps)
+            tot_sec = int(self.total_frames / self.fps)
+            self.time_label.configure(text=f"{cur_sec//60:02d}:{cur_sec%60:02d} / {tot_sec//60:02d}:{tot_sec%60:02d}")
 
     def load_second_image(self):
         file_path = filedialog.askopenfilename(filetypes=[("Image Files", "*.jpg;*.png")])
@@ -226,6 +286,17 @@ class VideoAIEditorWindow(ctk.CTkToplevel):
                     self.current_image = self.apply_processing(frame)
                     self.render_image(self.current_image)
                     if self.is_recording and self.video_writer: self.video_writer.write(self.current_image)
+                    
+                    # تحديث شريط الزمن وعرض الوقت بشكل متزامن
+                    if self.total_frames > 0:
+                        current_frame = int(self.cap.get(cv2.CAP_PROP_POS_FRAMES))
+                        self._is_updating_slider = True
+                        self.timeline_slider.set(current_frame)
+                        self._is_updating_slider = False
+                        
+                        cur_sec = int(current_frame / self.fps)
+                        tot_sec = int(self.total_frames / self.fps)
+                        self.time_label.configure(text=f"{cur_sec//60:02d}:{cur_sec%60:02d} / {tot_sec//60:02d}:{tot_sec%60:02d}")
                 else: 
                     self.stop_media()
                     return
@@ -242,6 +313,33 @@ class VideoAIEditorWindow(ctk.CTkToplevel):
         img = frame.copy()
         h, w = img.shape[:2]
         
+        # --- إضافة التكبير والتصغير (Zoom) ---
+        zoom_val = self.sliders.get("تكبير / تصغير (Zoom)", None)
+        if zoom_val:
+            z = zoom_val.get()
+            if z != 1.0:
+                if z > 1.0: # التكبير (Zoom In - Crop)
+                    center_x, center_y = w / 2, h / 2
+                    radius_x, radius_y = w / (2 * z), h / (2 * z)
+                    min_x, max_x = max(0, int(center_x - radius_x)), min(w, int(center_x + radius_x))
+                    min_y, max_y = max(0, int(center_y - radius_y)), min(h, int(center_y + radius_y))
+                    
+                    if max_x > min_x and max_y > min_y:
+                        img = cv2.resize(img[min_y:max_y, min_x:max_x], (w, h))
+                else: # التصغير (Zoom Out - Pad)
+                    new_w, new_h = max(1, int(w * z)), max(1, int(h * z))
+                    scaled_img = cv2.resize(img, (new_w, new_h))
+                    
+                    # إنشاء خلفية سوداء بحجم الصورة الأصلية
+                    canvas = np.zeros_like(img)
+                    x_offset = (w - new_w) // 2
+                    y_offset = (h - new_h) // 2
+                    
+                    # وضع الصورة المصغرة في المنتصف
+                    canvas[y_offset:y_offset+new_h, x_offset:x_offset+new_w] = scaled_img
+                    img = canvas
+        # -------------------------------------
+
         tx = self.sliders.get("إزاحة X (Translation X)", 0).get() if "إزاحة X (Translation X)" in self.sliders else 0
         ty = self.sliders.get("إزاحة Y (Translation Y)", 0).get() if "إزاحة Y (Translation Y)" in self.sliders else 0
         if tx != 0 or ty != 0:
@@ -527,6 +625,7 @@ class VideoAIEditorWindow(ctk.CTkToplevel):
         if "جاما (Gamma Power-Law)" in self.sliders: self.sliders["جاما (Gamma Power-Law)"].set(1.0)
         if "إزاحة X (Translation X)" in self.sliders: self.sliders["إزاحة X (Translation X)"].set(0)
         if "إزاحة Y (Translation Y)" in self.sliders: self.sliders["إزاحة Y (Translation Y)"].set(0)
+        if "تكبير / تصغير (Zoom)" in self.sliders: self.sliders["تكبير / تصغير (Zoom)"].set(1.0) # إعادة الزوم للوضع الطبيعي
 
         self.effect_var.set("بدون تأثير")
         self.ai_var.set("بدون ذكاء اصطناعي")
