@@ -150,6 +150,10 @@ class ImageEditorWindow(ctk.CTkToplevel):
         ctk.CTkLabel(self.tools_panel.tab(fix_arabic("الأبعاد والرسم")), text=fix_arabic("التحويل الهندسي"), font=ctk.CTkFont(weight="bold")).pack(pady=5)
         self.setup_slider(self.tools_panel.tab(fix_arabic("الأبعاد والرسم")), "إزاحة X (Translation X)", -300, 300, 0)
         self.setup_slider(self.tools_panel.tab(fix_arabic("الأبعاد والرسم")), "إزاحة Y (Translation Y)", -300, 300, 0)
+        
+        # إضافة شريط التكبير/التصغير (الزوم)
+        self.setup_slider(self.tools_panel.tab(fix_arabic("الأبعاد والرسم")), "تكبير / تصغير (Zoom)", 0.2, 5.0, 1.0)
+        
         ctk.CTkButton(self.tools_panel.tab(fix_arabic("الأبعاد والرسم")), text=fix_arabic("✂️ قص الصورة (Crop)"), command=self.crop_image).pack(pady=5, fill="x", padx=20)
         ctk.CTkButton(self.tools_panel.tab(fix_arabic("الأبعاد والرسم")), text=fix_arabic("🔄 تدوير 90°"), command=lambda: self.rotate_image(cv2.ROTATE_90_CLOCKWISE)).pack(pady=5, fill="x", padx=20)
         
@@ -195,6 +199,33 @@ class ImageEditorWindow(ctk.CTkToplevel):
     def apply_processing(self, frame):
         img = frame.copy()
         h, w = img.shape[:2]
+        
+        # --- إضافة التكبير والتصغير (Zoom) ---
+        zoom_val = self.sliders.get("تكبير / تصغير (Zoom)", None)
+        if zoom_val:
+            z = zoom_val.get()
+            if z != 1.0:
+                if z > 1.0: # التكبير (Zoom In - Crop)
+                    center_x, center_y = w / 2, h / 2
+                    radius_x, radius_y = w / (2 * z), h / (2 * z)
+                    min_x, max_x = max(0, int(center_x - radius_x)), min(w, int(center_x + radius_x))
+                    min_y, max_y = max(0, int(center_y - radius_y)), min(h, int(center_y + radius_y))
+                    
+                    if max_x > min_x and max_y > min_y:
+                        img = cv2.resize(img[min_y:max_y, min_x:max_x], (w, h))
+                else: # التصغير (Zoom Out - Pad)
+                    new_w, new_h = max(1, int(w * z)), max(1, int(h * z))
+                    scaled_img = cv2.resize(img, (new_w, new_h))
+                    
+                    # إنشاء خلفية سوداء بحجم الصورة الأصلية
+                    canvas = np.zeros_like(img)
+                    x_offset = (w - new_w) // 2
+                    y_offset = (h - new_h) // 2
+                    
+                    # وضع الصورة المصغرة في المنتصف
+                    canvas[y_offset:y_offset+new_h, x_offset:x_offset+new_w] = scaled_img
+                    img = canvas
+        # -------------------------------------
         
         tx = self.sliders.get("إزاحة X (Translation X)", 0).get() if "إزاحة X (Translation X)" in self.sliders else 0
         ty = self.sliders.get("إزاحة Y (Translation Y)", 0).get() if "إزاحة Y (Translation Y)" in self.sliders else 0
@@ -485,6 +516,7 @@ class ImageEditorWindow(ctk.CTkToplevel):
         if "جاما (Gamma Power-Law)" in self.sliders: self.sliders["جاما (Gamma Power-Law)"].set(1.0)
         if "إزاحة X (Translation X)" in self.sliders: self.sliders["إزاحة X (Translation X)"].set(0)
         if "إزاحة Y (Translation Y)" in self.sliders: self.sliders["إزاحة Y (Translation Y)"].set(0)
+        if "تكبير / تصغير (Zoom)" in self.sliders: self.sliders["تكبير / تصغير (Zoom)"].set(1.0)
 
         self.effect_var.set("بدون تأثير")
         self.ai_var.set("بدون ذكاء اصطناعي")
